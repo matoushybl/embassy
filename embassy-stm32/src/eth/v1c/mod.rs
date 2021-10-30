@@ -335,8 +335,8 @@ impl<'d, const TX: usize, const RX: usize> PeripheralState for Inner<'d, TX, RX>
     type Interrupt = crate::interrupt::ETH;
 
     fn on_interrupt(&mut self) {
-        unwrap!(self.desc_ring.tx.on_interrupt());
-        self.desc_ring.rx.on_interrupt();
+        // unwrap!(self.desc_ring.tx.on_interrupt());
+        // self.desc_ring.rx.on_interrupt();
 
         WAKER.wake();
 

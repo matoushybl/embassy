@@ -17,22 +17,22 @@ pub enum Error {
 /// Transmit and Receive Descriptor fields
 #[allow(dead_code)]
 mod emac_consts {
-    const TXDESC_0_OWN: u32 = 1 << 31;
-    const TXDESC_0_IOC: u32 = 1 << 30;
+    pub const TXDESC_0_OWN: u32 = 1 << 31;
+    pub const TXDESC_0_IOC: u32 = 1 << 30;
     // First segment of frame
-    const TXDESC_0_FS: u32 = 1 << 28;
+    pub const TXDESC_0_FS: u32 = 1 << 28;
     // Last segment of frame
-    const TXDESC_0_LS: u32 = 1 << 29;
+    pub const TXDESC_0_LS: u32 = 1 << 29;
     // Transmit end of ring
-    const TXDESC_0_TER: u32 = 1 << 21;
+    pub const TXDESC_0_TER: u32 = 1 << 21;
     // Second address chained
-    const TXDESC_0_TCH: u32 = 1 << 20;
+    pub const TXDESC_0_TCH: u32 = 1 << 20;
     // Error status
-    const TXDESC_0_ES: u32 = 1 << 15;
+    pub const TXDESC_0_ES: u32 = 1 << 15;
 
     // Transmit buffer size
-    const TXDESC_1_TBS_SHIFT: usize = 0;
-    const TXDESC_1_TBS_MASK: u32 = 0x0fff << TXDESC_1_TBS_SHIFT;
+    pub const TXDESC_1_TBS_SHIFT: usize = 0;
+    pub const TXDESC_1_TBS_MASK: u32 = 0x0fff << TXDESC_1_TBS_SHIFT;
 }
 use emac_consts::*;
 
@@ -62,7 +62,61 @@ impl TDes {
 
     /// Return true if this TDes is not currently owned by the DMA
     pub fn available(&self) -> bool {
-        self.tdes0.get() & TXDESC_0_OWN == 0
+        !self.is_owned()
+    }
+
+    /// Is owned by the DMA engine?
+    fn is_owned(&self) -> bool {
+        (self.tdes0.get() & TXDESC_0_OWN) == TXDESC_0_OWN
+    }
+
+    /// Pass ownership to the DMA engine
+    fn set_owned(&mut self) {
+        self.tdes0.set(self.tdes0.get() | TXDESC_0_OWN);
+    }
+
+    fn has_error(&self) -> bool {
+        (self.tdes0 & TXDESC_0_ES) == TXDESC_0_ES
+    }
+
+    fn set_buffer1(&mut self, buffer: *const u8) {
+        unsafe {
+            self.tdes2.set(buffer as u32);
+        }
+    }
+
+    fn set_buffer1_len(&mut self, len: usize) {
+        unsafe {
+            self.tdes1.set((w & !TXDESC_1_TBS_MASK) | ((len as u32) << TXDESC_1_TBS_SHIFT));
+        }
+    }
+
+    // points to next descriptor (RCH)
+    fn set_buffer2(&mut self, buffer: *const u8) {
+        unsafe {
+            self.tdes3.set(buffer as u32);
+        }
+    }
+
+    fn set_end_of_ring(&mut self) {
+        unsafe {
+            self.tdes0.set(self.tdes0.get() | TXDESC_0_TER);
+        }
+    }
+}
+
+impl TDes {
+    fn setup(&mut self, buffer: *const u8, _len: usize, next: Option<&Self>) {
+        // Defer this initialization to this function, so we can have `RingEntry` on bss.
+        self.tdes0.set(TXDESC_0_TCH | TXDESC_0_IC | TXDESC_0_FS | TXDESC_0_LS);
+        self.set_buffer1(buffer);
+        match next {
+            Some(next) => self.set_buffer2(&next as *const u8),
+            None => {
+                self.set_buffer2(0 as *const u8);
+                self.set_end_of_ring();
+            }
+        }
     }
 }
 
@@ -242,17 +296,17 @@ impl RDes {
 /// +---+---+---+---+  Read ok       +---+---+---+---+ No Read       +---+---+---+---+
 /// |   |   |   |   |  ------------> |   |   |   |   | ------------> |   |   |   |   |
 /// +---+---+---+---+  Allocation ok +---+---+---+---+               +---+---+---+---+
-///   ^           ^t                   ^t  ^                           ^t  ^          
-///   |r                                   |r                              |r         
-///   |nt                                  |nt                             |nt        
+///   ^           ^t                   ^t  ^                           ^t  ^
+///   |r                                   |r                              |r
+///   |nt                                  |nt                             |nt
 ///
 ///
 /// +---+---+---+---+  Read ok         +---+---+---+---+ Can't read    +---+---+---+---+
 /// |   |   |   |   |  ------------>   |   |   |   |   | ------------> |   |   |   |   |
 /// +---+---+---+---+  Allocation fail +---+---+---+---+ Allocation ok +---+---+---+---+
 ///       ^   ^t  ^                              ^t  ^                   ^       ^   ^t
-///       |r      |                              |r  |                   |       |r     
-///               |nt                                |nt                 |nt            
+///       |r      |                              |r  |                   |       |r
+///               |nt                                |nt                 |nt
 ///
 pub(crate) struct RDesRing<const N: usize> {
     rd: [RDes; N],
