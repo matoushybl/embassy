@@ -16,6 +16,9 @@ use crate::pac::{ETH, RCC, SYSCFG};
 use crate::peripherals;
 
 mod descriptors;
+mod rx_desc;
+mod tx_desc;
+
 use super::{StationManagement, PHY};
 use descriptors::DescriptorRing;
 use stm32_metapac::eth::vals::{
@@ -283,10 +286,12 @@ impl<'d, P: PHY, const TX: usize, const RX: usize> Drop for Ethernet<'d, P, TX, 
 
             // Disable the TX DMA and wait for any previous transmissions to be completed
             dma.dmaomr().modify(|w| w.set_st(St::STOPPED));
-            while {
-                let txqueue = mtl.mtltx_qdr().read();
-                txqueue.trcsts() == 0b01 || txqueue.txqsts()
-            } {}
+
+            todo!("Implement drop for Eth.");
+            // while {
+            //     let txqueue = mtl.mtltx_qdr().read();
+            //     txqueue.trcsts() == 0b01 || txqueue.txqsts()
+            // } {}
 
             // Disable MAC transmitter and receiver
             mac.maccr().modify(|w| {
@@ -295,10 +300,10 @@ impl<'d, P: PHY, const TX: usize, const RX: usize> Drop for Ethernet<'d, P, TX, 
             });
 
             // Wait for previous receiver transfers to be completed and then disable the RX DMA
-            while {
-                let rxqueue = mtl.mtlrx_qdr().read();
-                rxqueue.rxqsts() != 0b00 || rxqueue.prxq() != 0
-            } {}
+            // while {
+            //     let rxqueue = mtl.mtlrx_qdr().read();
+            //     rxqueue.rxqsts() != 0b00 || rxqueue.prxq() != 0
+            // } {}
 
             dma.dmaomr().modify(|w| w.set_sr(DmaomrSr::STOPPED));
         }
