@@ -22,6 +22,7 @@ embassy-traits = { version = "0.1.0", path = "../../embassy-traits", features = 
 embassy-stm32 = { version = "0.1.0", path = "../../embassy-stm32", features = ["defmt", "defmt-trace", "net", "stm32f767zi", "unstable-pac", "time-driver-tim2"]  }
 embassy-hal-common = {version = "0.1.0", path = "../../embassy-hal-common" }
 embassy-net = { path = "../../embassy-net", default-features = false, features = ["defmt-debug", "defmt", "tcp", "medium-ethernet", "pool-16"] }
+embassy-macros = { path = "../../embassy-macros" }
 
 defmt = "0.2.3"
 defmt-rtt = "0.2.0"

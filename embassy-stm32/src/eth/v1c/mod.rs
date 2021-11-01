@@ -438,10 +438,23 @@ macro_rules! impl_pin {
         impl $signal for peripherals::$pin {}
     };
 }
+// impl sealed::RefClkPin for peripherals::PA1 {
+//     fn configure(&mut self) {
+//         // NOTE(unsafe) Exclusive access to the registers
+//         critical_section::with(|_| unsafe {
+//             self.set_as_af(11, OutputPushPull);
+//             self.block()
+//                 .ospeedr()
+//                 .modify(|w| w.set_ospeedr(self.pin() as usize, Ospeedr::VERYHIGHSPEED));
+//         })
+//     }
+// }
+
+// impl RefClkPin for peripherals::PA1 {}
 
 crate::pac::peripheral_pins!(
-    ($inst:ident, eth, ETH, $pin:ident, REF_CLK) => {
-        impl_pin!($pin, RefClkPin, 11);
+    ($inst:ident, eth, ETH, $pin:ident, REF_CLK, $af:expr) => {
+        impl_pin!($pin, RefClkPin, $af);
     };
     ($inst:ident, eth, ETH, $pin:ident, MDIO, $af:expr) => {
         impl_pin!($pin, MDIOPin, $af);
