@@ -137,7 +137,7 @@ impl<'d, P: PHY, const TX: usize, const RX: usize> Ethernet<'d, P, TX, RX> {
         let hclk_mhz = hclk.0 / 1_000_000;
 
         // Set the MDC clock frequency in the range 1MHz - 2.5MHz
-        // TODO F7 allows max clock of 216 MHz, while F4 seems to allow 168 MHz
+        // TODO F7 allows max clock of 216 MHz, while F4 seems to allow max 168 MHz
         let clock_range = match hclk_mhz {
             0..=24 => panic!("Invalid HCLK frequency - should be at least 25 MHz."),
             25..=34 => Cr::CR_20_35,     // Divide by 16
@@ -288,23 +288,11 @@ impl<'d, P: PHY, const TX: usize, const RX: usize> Drop for Ethernet<'d, P, TX, 
             // Disable the TX DMA and wait for any previous transmissions to be completed
             dma.dmaomr().modify(|w| w.set_st(St::STOPPED));
 
-            todo!("Implement drop for Eth.");
-            // while {
-            //     let txqueue = mtl.mtltx_qdr().read();
-            //     txqueue.trcsts() == 0b01 || txqueue.txqsts()
-            // } {}
-
             // Disable MAC transmitter and receiver
             mac.maccr().modify(|w| {
                 w.set_re(false);
                 w.set_te(false);
             });
-
-            // Wait for previous receiver transfers to be completed and then disable the RX DMA
-            // while {
-            //     let rxqueue = mtl.mtlrx_qdr().read();
-            //     rxqueue.rxqsts() != 0b00 || rxqueue.prxq() != 0
-            // } {}
 
             dma.dmaomr().modify(|w| w.set_sr(DmaomrSr::STOPPED));
         }
@@ -435,19 +423,6 @@ macro_rules! impl_pin {
         impl $signal for peripherals::$pin {}
     };
 }
-// impl sealed::RefClkPin for peripherals::PA1 {
-//     fn configure(&mut self) {
-//         // NOTE(unsafe) Exclusive access to the registers
-//         critical_section::with(|_| unsafe {
-//             self.set_as_af(11, OutputPushPull);
-//             self.block()
-//                 .ospeedr()
-//                 .modify(|w| w.set_ospeedr(self.pin() as usize, Ospeedr::VERYHIGHSPEED));
-//         })
-//     }
-// }
-
-// impl RefClkPin for peripherals::PA1 {}
 
 crate::pac::peripheral_pins!(
     ($inst:ident, eth, ETH, $pin:ident, REF_CLK, $af:expr) => {

@@ -1,4 +1,4 @@
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{compiler_fence, fence, Ordering};
 
 use embassy_net::PacketBuf;
 use stm32_metapac::eth::vals::St;
@@ -41,8 +41,8 @@ use tx_consts::*;
 ///
 /// * tdes0: control
 /// * tdes1: buffer lengths
-/// * tdes2: buffer1 address
-/// * tdes3: address of the next descriptor
+/// * tdes2: data buffer address
+/// * tdes3: next descriptor address
 #[repr(C)]
 struct TDes {
     tdes0: VolatileCell<u32>,
@@ -63,12 +63,7 @@ impl TDes {
 
     /// Return true if this TDes is not currently owned by the DMA
     pub fn available(&self) -> bool {
-        !self.is_owned()
-    }
-
-    /// Is owned by the DMA engine?
-    fn is_owned(&self) -> bool {
-        (self.tdes0.get() & TXDESC_0_OWN) == TXDESC_0_OWN
+        (self.tdes0.get() & TXDESC_0_OWN) == 0
     }
 
     /// Pass ownership to the DMA engine
@@ -76,15 +71,12 @@ impl TDes {
         // "Preceding reads and writes cannot be moved past subsequent writes."
         fence(Ordering::Release);
 
+        compiler_fence(Ordering::Release);
         self.tdes0.set(self.tdes0.get() | TXDESC_0_OWN);
 
         // Used to flush the store buffer as fast as possible to make the buffer available for the
         // DMA.
         fence(Ordering::SeqCst);
-    }
-
-    fn has_error(&self) -> bool {
-        (self.tdes0.get() & TXDESC_0_ES) == TXDESC_0_ES
     }
 
     fn set_buffer1(&mut self, buffer: *const u8) {

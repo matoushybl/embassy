@@ -1,6 +1,6 @@
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{fence, compiler_fence, Ordering};
 
-use embassy_net::{MTU, Packet, PacketBox, PacketBoxExt, PacketBuf};
+use embassy_net::{Packet, PacketBox, PacketBoxExt, PacketBuf};
 use stm32_metapac::eth::vals::{DmaomrSr, Rpd, Rps};
 use vcell::VolatileCell;
 
@@ -31,8 +31,8 @@ use rx_consts::*;
 /// Receive Descriptor representation
 ///
 /// * rdes0: OWN and Status
-/// * rdes1: byte counts
-/// * rdes2: buffer 1 address
+/// * rdes1: allocated buffer length
+/// * rdes2: data buffer address
 /// * rdes3: next descriptor address
 #[repr(C)]
 struct RDes {
@@ -58,8 +58,8 @@ impl RDes {
         // Write-back descriptor is valid if:
         //
         // Contains first buffer of packet AND contains last buf of
-        // packet AND no errors AND not a context descriptor
-        self.is_last() && self.is_first() && !self.has_error()
+        // packet AND no errors
+        (self.rdes0.get() & (RXDESC_0_ES | RXDESC_0_FS | RXDESC_0_LS)) == (RXDESC_0_FS | RXDESC_0_LS)
     }
 
     /// Return true if this RDes is not currently owned by the DMA
@@ -68,47 +68,22 @@ impl RDes {
         self.rdes0.get() & RXDESC_0_OWN == 0 // Owned by us
     }
 
+    /// Configures the reception buffer address and length and passed descriptor ownership to the DMA
     #[inline(always)]
     pub fn set_ready(&mut self, buf_addr: u32, buf_len: usize) {
         self.rdes1.set(self.rdes1.get() | (buf_len as u32) & RXDESC_1_RBS_MASK);
         self.rdes2.set(buf_addr);
-        self.set_owned();
-    }
 
-    /// Is owned by the DMA engine?
-    #[inline(always)]
-    fn is_owned(&self) -> bool {
-        (self.rdes0.get() & RXDESC_0_OWN) == RXDESC_0_OWN
-    }
-
-    /// Pass ownership to the DMA engine
-    #[inline(always)]
-    fn set_owned(&mut self) {
         // "Preceding reads and writes cannot be moved past subsequent writes."
-
         fence(Ordering::Release);
+
+        compiler_fence(Ordering::Release);
+
         self.rdes0.set(self.rdes0.get() | RXDESC_0_OWN);
 
         // Used to flush the store buffer as fast as possible to make the buffer available for the
         // DMA.
         fence(Ordering::SeqCst);
-    }
-
-    #[inline(always)]
-    fn has_error(&self) -> bool {
-        (self.rdes0.get() & RXDESC_0_ES) == RXDESC_0_ES
-    }
-
-    /// Descriptor contains first buffer of frame
-    #[inline(always)]
-    fn is_first(&self) -> bool {
-        (self.rdes0.get() & RXDESC_0_FS) == RXDESC_0_FS
-    }
-
-    /// Descriptor contains last buffers of frame
-    #[inline(always)]
-    fn is_last(&self) -> bool {
-        (self.rdes0.get() & RXDESC_0_LS) == RXDESC_0_LS
     }
 
     // points to next descriptor (RCH)
@@ -120,6 +95,11 @@ impl RDes {
     #[inline(always)]
     fn set_end_of_ring(&mut self) {
         self.rdes1.set(self.rdes1.get() | RXDESC_1_RER);
+    }
+
+    #[inline(always)]
+    fn packet_len(&self) -> usize {
+        ((self.rdes0.get() >> RXDESC_0_FL_SHIFT) & RXDESC_0_FL_MASK) as usize
     }
 
     pub fn setup(&mut self, next: Option<&Self>) {
@@ -176,8 +156,8 @@ impl RunningState {
 pub(crate) struct RDesRing<const N: usize> {
     descriptors: [RDes; N],
     buffers: [Option<PacketBox>; N],
-    next_idx: usize,
-    next_tail_idx: usize,
+    read_index: usize,
+    next_tail_index: usize,
 }
 
 impl<const N: usize> RDesRing<N> {
@@ -188,8 +168,8 @@ impl<const N: usize> RDesRing<N> {
         Self {
             descriptors: [RDES; N],
             buffers: [BUFFERS; N],
-            next_idx: 0,
-            next_tail_idx: 0,
+            read_index: 0,
+            next_tail_index: 0,
         }
     }
 
@@ -211,7 +191,7 @@ impl<const N: usize> RDesRing<N> {
             *buf = Some(pkt);
             last_index = index;
         }
-        self.next_tail_idx = (last_index + 1) % N;
+        self.next_tail_index = (last_index + 1) % N;
 
         // not sure if this is supposed to span all of the descriptor or just those that contain buffers
         {
@@ -284,17 +264,17 @@ impl<const N: usize> RDesRing<N> {
         // buffer (I think .-.)
         fence(Ordering::SeqCst);
 
-        let read_available = self.descriptors[self.next_idx].available();
-        let tail_index = (self.next_tail_idx + N - 1) % N;
+        let read_available = self.descriptors[self.read_index].available();
+        let tail_index = (self.next_tail_index + N - 1) % N;
 
-        let pkt = if read_available && self.next_idx != tail_index {
-            let pkt = self.buffers[self.next_idx].take();
-            let len = ((self.descriptors[self.next_idx].rdes0.get() >> RXDESC_0_FL_SHIFT)& RXDESC_0_FL_MASK) as usize;
+        let pkt = if read_available && self.read_index != tail_index {
+            let pkt = self.buffers[self.read_index].take();
+            let len = self.descriptors[self.read_index].packet_len();
 
             assert!(pkt.is_some());
-            let valid = self.descriptors[self.next_idx].valid();
+            let valid = self.descriptors[self.read_index].valid();
 
-            self.next_idx = (self.next_idx + 1) % N;
+            self.read_index = (self.read_index + 1) % N;
             if valid {
                 pkt.map(|p| p.slice(0..len))
             } else {
@@ -304,19 +284,19 @@ impl<const N: usize> RDesRing<N> {
             None
         };
 
-        // Try to advance the tail_idx
-        if self.next_tail_idx != self.next_idx {
+        // Try to advance the tail_index
+        if self.next_tail_index != self.read_index {
             match PacketBox::new(Packet::new()) {
                 Some(b) => {
                     let addr = b.as_ptr() as u32;
                     let buffer_len = b.len();
-                    self.buffers[self.next_tail_idx].replace(b);
-                    self.descriptors[self.next_tail_idx].set_ready(addr, buffer_len);
+                    self.buffers[self.next_tail_index].replace(b);
+                    self.descriptors[self.next_tail_index].set_ready(addr, buffer_len);
 
                     // "Preceding reads and writes cannot be moved past subsequent writes."
                     fence(Ordering::Release);
 
-                    self.next_tail_idx = (self.next_tail_idx + 1) % N;
+                    self.next_tail_index = (self.next_tail_index + 1) % N;
                 }
                 None => {}
             }
