@@ -137,13 +137,14 @@ impl<'d, P: PHY, const TX: usize, const RX: usize> Ethernet<'d, P, TX, RX> {
         let hclk_mhz = hclk.0 / 1_000_000;
 
         // Set the MDC clock frequency in the range 1MHz - 2.5MHz
+        // TODO F7 allows max clock of 216 MHz, while F4 seems to allow 168 MHz
         let clock_range = match hclk_mhz {
             0..=24 => panic!("Invalid HCLK frequency - should be at least 25 MHz."),
             25..=34 => Cr::CR_20_35,     // Divide by 16
             35..=59 => Cr::CR_35_60,     // Divide by 26
             60..=99 => Cr::CR_60_100,    // Divide by 42
             100..=149 => Cr::CR_100_150, // Divide by 62
-            150..=168 => Cr::CR_150_168, // Divide by 102
+            150..=216 => Cr::CR_150_168, // Divide by 102
             _ => {
                 panic!("HCLK results in MDC clock > 2.5MHz even for the highest CSR clock divider")
             }
@@ -340,12 +341,11 @@ impl<'d, const TX: usize, const RX: usize> PeripheralState for Inner<'d, TX, RX>
     type Interrupt = crate::interrupt::ETH;
 
     fn on_interrupt(&mut self) {
-        // unwrap!(self.desc_ring.tx.on_interrupt());
-        // self.desc_ring.rx.on_interrupt();
+        unwrap!(self.desc_ring.tx.on_interrupt());
+        self.desc_ring.rx.on_interrupt();
 
         WAKER.wake();
 
-        // TODO: Check and clear more flags
         unsafe {
             let dma = ETH.ethernet_dma();
 
@@ -354,9 +354,6 @@ impl<'d, const TX: usize, const RX: usize> PeripheralState for Inner<'d, TX, RX>
                 w.set_rs(true);
                 w.set_nis(true);
             });
-            // Delay two peripheral's clock
-            dma.dmasr().read();
-            dma.dmasr().read();
         }
     }
 }

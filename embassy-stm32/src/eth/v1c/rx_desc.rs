@@ -1,7 +1,7 @@
 use core::sync::atomic::{fence, Ordering};
 
-use embassy_net::{Packet, PacketBox, PacketBoxExt, PacketBuf};
-use stm32_metapac::eth::vals::{DmaomrSr, Rpd};
+use embassy_net::{MTU, Packet, PacketBox, PacketBoxExt, PacketBuf};
+use stm32_metapac::eth::vals::{DmaomrSr, Rpd, Rps};
 use vcell::VolatileCell;
 
 use crate::pac::ETH;
@@ -19,8 +19,7 @@ mod rx_consts {
     pub const RXDESC_0_FL_MASK: u32 = 0x3FFF;
     pub const RXDESC_0_FL_SHIFT: usize = 16;
 
-    pub const RXDESC_1_RBS_SHIFT: usize = 0;
-    pub const RXDESC_1_RBS_MASK: u32 = 0x0fff << RXDESC_1_RBS_SHIFT;
+    pub const RXDESC_1_RBS_MASK: u32 = 0x0fff;
     /// Second address chained
     pub const RXDESC_1_RCH: u32 = 1 << 14;
     /// End Of Ring
@@ -60,7 +59,7 @@ impl RDes {
         //
         // Contains first buffer of packet AND contains last buf of
         // packet AND no errors AND not a context descriptor
-        self.rdes0.get() & (RXDESC_0_FS | RXDESC_0_LS | RXDESC_0_ES) == (RXDESC_0_FS | RXDESC_0_LS)
+        self.is_last() && self.is_first() && !self.has_error()
     }
 
     /// Return true if this RDes is not currently owned by the DMA
@@ -69,18 +68,21 @@ impl RDes {
         self.rdes0.get() & RXDESC_0_OWN == 0 // Owned by us
     }
 
-    // #[inline(always)]
-    // pub fn set_ready(&mut self, buf_addr: u32) {
-    //     self.set_buffer1(buffer, len)
-    //     self.set_owned();
-    // }
+    #[inline(always)]
+    pub fn set_ready(&mut self, buf_addr: u32, buf_len: usize) {
+        self.rdes1.set(self.rdes1.get() | (buf_len as u32) & RXDESC_1_RBS_MASK);
+        self.rdes2.set(buf_addr);
+        self.set_owned();
+    }
 
     /// Is owned by the DMA engine?
+    #[inline(always)]
     fn is_owned(&self) -> bool {
         (self.rdes0.get() & RXDESC_0_OWN) == RXDESC_0_OWN
     }
 
     /// Pass ownership to the DMA engine
+    #[inline(always)]
     fn set_owned(&mut self) {
         // "Preceding reads and writes cannot be moved past subsequent writes."
 
@@ -92,46 +94,38 @@ impl RDes {
         fence(Ordering::SeqCst);
     }
 
+    #[inline(always)]
     fn has_error(&self) -> bool {
         (self.rdes0.get() & RXDESC_0_ES) == RXDESC_0_ES
     }
 
     /// Descriptor contains first buffer of frame
+    #[inline(always)]
     fn is_first(&self) -> bool {
         (self.rdes0.get() & RXDESC_0_FS) == RXDESC_0_FS
     }
 
     /// Descriptor contains last buffers of frame
+    #[inline(always)]
     fn is_last(&self) -> bool {
         (self.rdes0.get() & RXDESC_0_LS) == RXDESC_0_LS
     }
 
-    fn set_buffer1(&mut self, buffer: *const u8) {
-        self.rdes2.set(buffer as u32);
-    }
-
-    fn set_buffer1_len(&mut self, len: usize) {
-        self.rdes1
-            .set((self.rdes1.get() & !RXDESC_1_RBS_MASK) | ((len as u32) << RXDESC_1_RBS_SHIFT));
-    }
-
     // points to next descriptor (RCH)
+    #[inline(always)]
     fn set_buffer2(&mut self, buffer: *const u8) {
         self.rdes3.set(buffer as u32);
     }
 
+    #[inline(always)]
     fn set_end_of_ring(&mut self) {
         self.rdes1.set(self.rdes1.get() | RXDESC_1_RER);
     }
 
-    fn get_frame_len(&self) -> usize {
-        ((self.rdes0.get() >> RXDESC_0_FL_SHIFT) & RXDESC_0_FL_MASK) as usize
-    }
-
     pub fn setup(&mut self, next: Option<&Self>) {
         // Defer this initialization to this function, so we can have `RingEntry` on bss.
+        self.rdes1.set(self.rdes1.get() | RXDESC_1_RCH);
 
-        self.rdes1.set(RXDESC_1_RCH);
         match next {
             Some(next) => self.set_buffer2(next as *const _ as *const u8),
             None => {
@@ -139,6 +133,20 @@ impl RDes {
                 self.set_end_of_ring();
             }
         }
+    }
+}
+/// Running state of the `RxRing`
+#[derive(PartialEq, Eq, Debug)]
+pub enum RunningState {
+    Unknown,
+    Stopped,
+    Running,
+}
+
+impl RunningState {
+    /// whether self equals to `RunningState::Running`
+    pub fn is_running(&self) -> bool {
+        *self == RunningState::Running
     }
 }
 
@@ -187,7 +195,6 @@ impl<const N: usize> RDesRing<N> {
 
     pub(crate) fn init(&mut self) {
         assert!(N > 1);
-        let mut previous: Option<&mut RDes> = None;
         let mut last_index = 0;
         for (index, buf) in self.buffers.iter_mut().enumerate() {
             let pkt = match PacketBox::new(Packet::new()) {
@@ -200,9 +207,7 @@ impl<const N: usize> RDesRing<N> {
                     }
                 }
             };
-
-            self.descriptors[index].set_buffer1(pkt.as_ptr() as *const u8);
-            self.descriptors[index].set_owned();
+            self.descriptors[index].set_ready(pkt.as_ptr() as u32, pkt.len());
             *buf = Some(pkt);
             last_index = index;
         }
@@ -251,8 +256,29 @@ impl<const N: usize> RDesRing<N> {
         // would soon hit the read ptr anyway, and we will wake smoltcp's stack on the interrupt
         // which should try to pop a packet...
     }
+    /// Get current `RunningState`
+    fn running_state(&self) -> RunningState {
+        match unsafe { ETH.ethernet_dma().dmasr().read().rps()} {
+            //  Reset or Stop Receive Command issued
+            Rps::STOPPED => RunningState::Stopped,
+            //  Fetching receive transfer descriptor
+            Rps::RUNNINGFETCHING => RunningState::Running,
+            //  Waiting for receive packet
+            Rps::RUNNINGWAITING => RunningState::Running,
+            //  Receive descriptor unavailable
+            Rps::SUSPENDED => RunningState::Stopped,
+            //  Closing receive descriptor
+            Rps(0b101) => RunningState::Running,
+            //  Transferring the receive packet data from receive buffer to host memory
+            Rps::RUNNINGWRITING => RunningState::Running,
+            _ => RunningState::Unknown,
+        }
+    }
 
     pub(crate) fn pop_packet(&mut self) -> Option<PacketBuf> {
+        if !self.running_state().is_running() {
+            self.demand_poll();
+        }
         // Not sure if the contents of the write buffer on the M7 can affects reads, so we are using
         // a DMB here just in case, it also serves as a hint to the compiler that we're syncing the
         // buffer (I think .-.)
@@ -263,7 +289,7 @@ impl<const N: usize> RDesRing<N> {
 
         let pkt = if read_available && self.next_idx != tail_index {
             let pkt = self.buffers[self.next_idx].take();
-            let len = (self.descriptors[self.next_idx].rdes1.get() & RXDESC_1_RBS_MASK) as usize;
+            let len = ((self.descriptors[self.next_idx].rdes0.get() >> RXDESC_0_FL_SHIFT)& RXDESC_0_FL_MASK) as usize;
 
             assert!(pkt.is_some());
             let valid = self.descriptors[self.next_idx].valid();
@@ -282,9 +308,10 @@ impl<const N: usize> RDesRing<N> {
         if self.next_tail_idx != self.next_idx {
             match PacketBox::new(Packet::new()) {
                 Some(b) => {
-                    self.descriptors[self.next_tail_idx].set_buffer1(b.as_ptr() as *const u8);
+                    let addr = b.as_ptr() as u32;
+                    let buffer_len = b.len();
                     self.buffers[self.next_tail_idx].replace(b);
-                    self.descriptors[self.next_tail_idx].set_owned();
+                    self.descriptors[self.next_tail_idx].set_ready(addr, buffer_len);
 
                     // "Preceding reads and writes cannot be moved past subsequent writes."
                     fence(Ordering::Release);
