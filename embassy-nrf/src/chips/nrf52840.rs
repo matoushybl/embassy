@@ -155,6 +155,9 @@ embassy_hal_common::peripherals! {
 
     // TEMP
     TEMP,
+
+    // USBD
+    USBD,
 }
 
 impl_uarte!(UARTE0, UARTE0, UARTE0_UART0);
@@ -321,3 +324,5 @@ pub mod irqs {
     declare!(PWM3);
     declare!(SPIM3);
 }
+
+unsafe impl embassy_hal_common::usb::USBInterrupt for irqs::USBD {}

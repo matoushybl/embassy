@@ -15,6 +15,8 @@ use crate::peripheral::PeripheralMutex;
 use crate::ring_buffer::RingBuffer;
 use crate::usb::{ClassSet, SerialState, USBInterrupt};
 
+pub use super::cdc_acm::USB_CLASS_CDC;
+
 pub struct ReadInterface<'a, 'bus, 'c, I, B, T, INT>
 where
     I: Unpin,

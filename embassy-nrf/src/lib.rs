@@ -47,6 +47,7 @@ pub mod temp;
 pub mod timer;
 pub mod twim;
 pub mod uarte;
+pub mod usbd;
 #[cfg(not(feature = "_nrf5340"))]
 pub mod wdt;
 
