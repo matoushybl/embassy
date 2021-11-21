@@ -5,6 +5,7 @@
 use defmt::unwrap;
 use defmt_rtt as _; // global logger
 use embassy::executor::Spawner;
+use embassy::interrupt::InterruptExt;
 use embassy::io::AsyncBufReadExt;
 use embassy::io::AsyncWriteExt;
 use embassy::time::{Duration, Timer};
@@ -21,7 +22,9 @@ use futures::future::{select, Either};
 use futures::pin_mut;
 use nrf_usbd::Usbd;
 use panic_probe as _;
+use usb_device::bus::UsbBus;
 use usb_device::class_prelude::UsbBusAllocator;
+use usb_device::device::UsbDevice;
 use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
 
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -56,23 +59,25 @@ async fn main(_spawner: Spawner, p: Peripherals) {
     Timer::after(Duration::from_millis(300)).await;
 
     let usb = UsbPeripheral::new(p.USBD);
-    let usb = Usbd::new(usb);
+    let bus = Usbd::new(usb);
 
-    let bus = USB_BUS.put(usb);
     defmt::error!("Hello world");
 
     let mut read_buf = [0u8; 128];
     let mut write_buf = [0u8; 128];
-    let serial = UsbSerial::new(bus, &mut read_buf, &mut write_buf);
+    let serial = UsbSerial::new(&bus, &mut read_buf, &mut write_buf);
 
-    let device = UsbDeviceBuilder::new(bus, UsbVidPid(0x16c0, 0x27dd))
+    let device = UsbDeviceBuilder::new(&bus, UsbVidPid(0x16c0, 0x27dd))
         .manufacturer("Fake company")
         .product("Serial port")
         .serial_number("TEST")
         .device_class(USB_CLASS_CDC)
         .build();
 
+    // device.bus().enable();
+
     let irq = interrupt::take!(USBD);
+    irq.enable();
 
     let mut state = State::new();
 
@@ -124,5 +129,9 @@ async fn main(_spawner: Spawner, p: Peripherals) {
         } else {
             unwrap!(write_interface.write_all(b"\r\nSend something\r\n").await);
         }
+    }
+
+    loop {
+        Timer::after(Duration::from_millis(300)).await;
     }
 }

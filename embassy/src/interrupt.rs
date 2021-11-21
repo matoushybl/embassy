@@ -78,6 +78,7 @@ impl<T: Interrupt + ?Sized> InterruptExt for T {
 
     #[inline]
     fn enable(&self) {
+        defmt::error!("enable");
         compiler_fence(Ordering::SeqCst);
         unsafe {
             NVIC::unmask(NrWrap(self.number()));
@@ -86,6 +87,7 @@ impl<T: Interrupt + ?Sized> InterruptExt for T {
 
     #[inline]
     fn disable(&self) {
+        defmt::error!("disable");
         NVIC::mask(NrWrap(self.number()));
         compiler_fence(Ordering::SeqCst);
     }
