@@ -111,6 +111,11 @@ cfg_if::cfg_if! {
     }
 }
 
+#[cfg(feature = "unstable-pac")]
+pub mod low_level {
+    pub use super::sealed::*;
+}
+
 pub(crate) mod sealed {
     pub trait RccPeripheral {
         fn frequency() -> crate::time::Hertz;
