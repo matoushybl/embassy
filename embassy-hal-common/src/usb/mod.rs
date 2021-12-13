@@ -146,7 +146,7 @@ where
 {
     type Interrupt = I;
     fn on_interrupt(&mut self) {
-        defmt::error!("usbd interrupt.");
+        // defmt::error!("usbd interrupt.");
         self.classes.poll_all(&mut self.device);
     }
 }

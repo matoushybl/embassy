@@ -91,7 +91,6 @@ impl<'a, S: PeripheralState> PeripheralMutex<'a, S> {
         state_ptr.write(init());
 
         irq.disable();
-        defmt::error!("setting handler");
         irq.set_handler(|p| {
             // Safety: it's OK to get a &mut to the state, since
             // - We checked that the thread owning the `PeripheralMutex` can't preempt us in `new`.
@@ -99,7 +98,6 @@ impl<'a, S: PeripheralState> PeripheralMutex<'a, S> {
             //   which can't safely store a `PeripheralMutex` across invocations.
             // - We can't have preempted a with() call because the irq is disabled during it.
             let state = unsafe { &mut *(p as *mut S) };
-            defmt::error!("irq");
             state.on_interrupt();
         });
         irq.set_handler_context(state_ptr as *mut ());

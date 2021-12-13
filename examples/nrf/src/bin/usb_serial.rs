@@ -87,6 +87,15 @@ async fn main(_spawner: Spawner, p: Peripherals) {
 
     defmt::error!("pinned");
     // usb.as_mut().start();
+    unsafe {
+        (*embassy_nrf::pac::USBD::ptr()).intenset.write(|w| {
+            w.sof().set_bit();
+            w.usbevent().set_bit();
+            w.ep0datadone().set_bit();
+            w.ep0setup().set_bit();
+            w.usbreset().set_bit()
+        })
+    };
 
     let (mut read_interface, mut write_interface) = usb.as_ref().take_serial_0();
 
@@ -100,6 +109,7 @@ async fn main(_spawner: Spawner, p: Peripherals) {
                     let byte = unwrap!(read_interface.read_byte().await);
                     unwrap!(write_interface.write_byte(byte).await);
                     buf[n] = byte;
+                    defmt::error!("recvd {}", byte);
 
                     n += 1;
                     if byte == b'\n' || byte == b'\r' || n == buf.len() {
