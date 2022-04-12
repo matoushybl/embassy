@@ -87,7 +87,7 @@ pub(crate) mod sealed {
         fn is_running(&self) -> bool;
 
         /// Returns the total number of remaining transfers.
-        fn remaining_transfers(&mut self) -> u16;
+        fn remaining_transfers(&mut self) -> u32;
 
         /// Sets the waker that is called when this channel stops (either completed or manually stopped)
         fn set_waker(&mut self, waker: &Waker);
@@ -178,7 +178,7 @@ mod transfers {
         reg_addr: *mut W,
         buf: &'a mut [W],
     ) -> impl Future<Output = ()> + 'a {
-        assert!(buf.len() > 0 && buf.len() <= 0xFFFF);
+        assert!(!buf.is_empty());
         unborrow!(channel);
 
         unsafe { channel.start_read::<W>(request, reg_addr, buf, Default::default()) };
@@ -193,7 +193,7 @@ mod transfers {
         buf: &'a [W],
         reg_addr: *mut W,
     ) -> impl Future<Output = ()> + 'a {
-        assert!(buf.len() > 0 && buf.len() <= 0xFFFF);
+        assert!(!buf.is_empty());
         unborrow!(channel);
 
         unsafe { channel.start_write::<W>(request, buf, reg_addr, Default::default()) };
