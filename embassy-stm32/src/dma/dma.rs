@@ -67,25 +67,29 @@ impl ChannelState {
         transfer_len_bytes: u8,
     ) -> (M0AR, M1AR, ChunkSize) {
         assert!(data_len % 2 == 0);
+        let chunk_estimate = data_len / 0xffff;
 
-        let mut chunk_size = data_len;
-        let mut total_chunk_count = 1;
-        while chunk_size > 0xffff {
-            chunk_size /= 2;
-            total_chunk_count *= 2;
+        let mut chunks = chunk_estimate + 1;
+        while data_len % chunks != 0 {
+            chunks += 1;
         }
-        let remaining_chunks = total_chunk_count - 2;
+
+        let chunk_size = data_len / chunks;
+
+        let remaining_chunks = chunks - 2;
+
+        defmt::error!("chunks: {}, chunk_size {}", chunks, chunk_size);
 
         self.chunk_size.store(chunk_size as u16, Ordering::SeqCst);
         self.remaining_chunks
-            .store(remaining_chunks, Ordering::SeqCst);
+            .store(remaining_chunks as u32, Ordering::SeqCst);
         self.giant_transfer_enabled.store(true, Ordering::SeqCst);
         self.transfer_len_bytes
             .store(transfer_len_bytes, Ordering::SeqCst);
 
         (
             M0AR(data_addr),
-            M1AR(data_addr + chunk_size as u32),
+            M1AR(data_addr + chunk_size as u32 * transfer_len_bytes as u32),
             ChunkSize(chunk_size as u16),
         )
     }
@@ -483,7 +487,30 @@ mod low_level_api {
         let cr = dma.st(channel_num).cr();
         let isr = dma.isr(channel_num / 4).read();
 
+        defmt::error!(
+            "irq {} {} {}",
+            state_index,
+            isr.tcif(channel_num % 4),
+            isr.teif(channel_num % 4)
+        );
+
         if isr.teif(channel_num % 4) {
+            defmt::info!("{} teif", state_index);
+            if STATE.channels[state_index].is_giant_transfer_enabled()
+                && (dma.st(channel_num).m0ar().read() == 0xffff_ffff
+                    || dma.st(channel_num).m1ar().read() == 0xffff_ffff)
+            {
+                dma.ifcr(channel_num / 4).write(|w| {
+                    w.set_teif(channel_num % 4, true);
+                    w.set_tcif(channel_num % 4, true);
+                });
+                defmt::error!("Giant transfer completed {}", channel_num);
+                cr.write(|_| ()); // Disable channel with the default value.
+                STATE.channels[state_index].disable_giant_transfer();
+                STATE.channels[state_index].waker.wake();
+                return;
+            }
+
             panic!(
                 "DMA: error on DMA@{:08x} channel {}",
                 dma.0 as u32, channel_num
@@ -496,8 +523,13 @@ mod low_level_api {
                     .write(|w| w.set_tcif(channel_num % 4, true));
 
                 let remaining_transfers = STATE.channels[state_index].remaining_chunks();
+                defmt::info!(
+                    "{} remaining transfers {}",
+                    state_index,
+                    remaining_transfers
+                );
+                let current_target_memory1 = cr.read().ct() == vals::Ct::MEMORY1;
                 if remaining_transfers != 0 {
-                    let current_target_memory1 = cr.read().ct() == vals::Ct::MEMORY1;
                     if remaining_transfers % 2 == 0 && current_target_memory1 {
                         // update pointer to memory 0
                         let mem0_addr = dma.st(channel_num).m0ar().read();
@@ -510,14 +542,20 @@ mod low_level_api {
                         dma.st(channel_num).m1ar().write_value(new_addr);
                     }
                 } else {
-                    // TCIF here means that Chunk N - 1 was transferred, the giant transfer is marked as finished
-                    // next TCIF will mean that all the data is transferred and will wake the future
-                    STATE.channels[state_index].disable_giant_transfer();
+                    // poisoning the target address to avoid overwriting the already transferred data
+                    if current_target_memory1 {
+                        defmt::info!("{} poisoning {}", state_index, 0);
+                        dma.st(channel_num).m0ar().write_value(0xffff_ffff);
+                    } else {
+                        dma.st(channel_num).m1ar().write_value(0xffff_ffff);
+                        defmt::info!("{} poisoning {}", state_index, 1);
+                    }
                 }
             }
         } else {
+            defmt::info!("{} the fucko?", state_index);
             if isr.tcif(channel_num % 4) && cr.read().tcie() {
-                cr.write(|_| ()); // Disable channel interrupts with the default value.
+                cr.write(|_| ()); // Disable channel with the default value.
                 STATE.channels[state_index].waker.wake();
             }
         }
